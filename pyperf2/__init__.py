@@ -39,6 +39,7 @@ class IPerfInstance(object):
         self.bandwidth = "1000pps"
         self.port = "5001"
         self.status = "configured"
+        self.packet_len = "1470"
         self._result_regex = None
         self._info_regex = None
         self._results = {}
@@ -452,6 +453,8 @@ class IPerfInstance(object):
                 _cli.append("-B")
                 _cli.append("{0}:{1}".format(self.bind_ip, self.client_source_port))
             if self.protocol == "udp":
+                _cli.append("-l")
+                _cli.append(self.packet_len)
                 # [  3] local 192.168.51.154 port 54877 connected with 225.0.0.5 port 5001
                 self._result_regex = re.compile(
                     r"^\[\s*(?P<stream_id>\d+)\]\s+(?P<interval_begin>\d+\.\d+)-(?P<interval_end>\d+\.\d+)\s+(?P<interval_unit>\S+)\s+(?P<transferred>\S+)\s+(?P<transferred_unit>\S+)\s+(?P<bandwidth>\S+)\s+(?P<bandwidth_unit>\S+)\s+(?P<packets_written>\S+)/(?P<packets_error>\S+)\s+(?P<packet_rate>\d+)\s+(?P<packet_rate_unit>\S+)"

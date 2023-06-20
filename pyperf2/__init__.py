@@ -40,6 +40,7 @@ class IPerfInstance(object):
         self.port = "5001"
         self.status = "configured"
         self.packet_len = "1470"
+        self.dscp = None
         self._result_regex = None
         self._info_regex = None
         self._results = {}
@@ -175,7 +176,9 @@ class IPerfInstance(object):
                         report_message["packets_received"] = packets_received
                         # print('{0} {1}'.format(packets_lost,packets_received))
 
-                    except IndexError:  # loss without event registred, can only be at interval_begin 0.0 -> ignore
+                    except (
+                        IndexError
+                    ):  # loss without event registred, can only be at interval_begin 0.0 -> ignore
                         # print('----------------------index error------------------------')
                         if interval_begin == 0:
                             report_message["packets_lost"] = 0
@@ -350,7 +353,6 @@ class IPerfInstance(object):
                     result["interval_end"]
                     != results_with_packet_loss[idx + 1]["interval_begin"]
                 ):
-
                     events.append(
                         {
                             "detail": event_data,
@@ -478,6 +480,51 @@ class IPerfInstance(object):
 
         _cli.append("-p")
         _cli.append(self.port)
+
+        if self.dscp:
+            accepted_tos_values = [
+                "af11",
+                "af12",
+                "af13",
+                "af21",
+                "af22",
+                "af23",
+                "af31",
+                "af32",
+                "af33",
+                "af41",
+                "af42",
+                "af43",
+                "cs0",
+                "cs1",
+                "cs2",
+                "cs3",
+                "cs4",
+                "cs5",
+                "cs6",
+                "cs7",
+                "ef",
+                "le",
+                "nqb",
+                "nqb2",
+                "ac_be",
+                "ac_bk",
+                "ac_vi",
+                "ac_vo",
+                "lowdelay",
+                "throughput",
+            ]
+            self.dscp = self.dscp.lower()
+            if str(self.dscp) in accepted_tos_values or (
+                int(self.dscp) > 0 and int(self.dscp) <= 255
+            ):
+                _cli.append("-S")
+                _cli.append(self.dscp)
+            else:
+                raise ValueError(f'"{self.dscp}" is not a valid DSCP Value')
+
+            _cli.append("-S")
+            _cli.append(self.dscp)
 
         return _cli
 

@@ -55,6 +55,7 @@ class IPerfInstance(object):
         self._raw_log_filepath = None
         self._raw_log_filehandler = None
         self._creation_time = datetime.datetime.now().replace(microsecond=0).isoformat()
+        self.ttl=255
 
         if "pps" in self.bandwidth:
             self.expected_interval_packets = int(
@@ -464,6 +465,10 @@ class IPerfInstance(object):
                 self._result_regex = re.compile(
                     r"^\[\s*(?P<stream_id>\d+)\]\s+(?P<interval_begin>\d+\.\d+)-(?P<interval_end>\d+\.\d+)\s+(?P<interval_unit>\S+)\s+(?P<transferred>\S+)\s+(?P<transferred_unit>\S+)\s+(?P<bandwidth>\S+)\s+(?P<bandwidth_unit>\S+)\s+(?P<packets_written>\S+)/(?P<packets_error>\S+)\s+(?P<packet_rate>\d+)\s+(?P<packet_rate_unit>\S+)"
                 )
+            if self.ttl:
+                _cli.append("-T")
+                _cli.append(self.ttl)
+
         else:
             raise ValueError("type must be set to either server or client")
         if self.protocol == "udp":

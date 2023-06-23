@@ -44,7 +44,7 @@ class IPerfInstance(object):
         self._result_regex = None
         self._info_regex = None
         self._results = {}
-        self.test_duration = "86400"
+        self.test_duration = 0
         self.client_source_port = None
         self.use_linux_namespace = None
         self._on_data_callbacks = []
@@ -417,6 +417,8 @@ class IPerfInstance(object):
             )
         else:
             self.expected_interval_packets = None
+        if self.test_duration == None:
+            self.test_duration = 0
 
     def get_options(self):
         retval = {}
@@ -431,8 +433,9 @@ class IPerfInstance(object):
             _cli.extend("ip netns exec {0}".format(self.use_linux_namespace).split(" "))
         _cli.append(self.iperf_binary_path)
         _cli.append("-e")
-        _cli.append("-t")
-        _cli.append(self.test_duration)
+        if self.test_duration:
+            _cli.append("-t")
+            _cli.append(self.test_duration)
         if self.type == "server":
             _cli.append("-s")
             if self.bind_ip:
@@ -549,6 +552,7 @@ class IPerfInstance(object):
         self._running = True
         self.status = "running"
         time.sleep(0.2)
+
         self._cleanup_timer_thread = threading.Timer(
             int(self.test_duration) + 10, self.stop
         )

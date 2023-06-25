@@ -12,6 +12,8 @@ from decimal import Decimal
 from pprint import pprint, pformat
 import logging
 import datetime
+from pyroute2 import netns
+
 
 
 def output_reader(proc, outq, parent):
@@ -22,6 +24,8 @@ def output_reader(proc, outq, parent):
 
         parent.line_ready_callback()
 
+class NameSpaceNotFoundError(Exception):
+    pass
 
 class IPerfInstance(object):
     def __init__(self):
@@ -96,7 +100,9 @@ class IPerfInstance(object):
         if self._raw_log_filehandler:
             self._raw_log_filehandler.write(line)
             self._raw_log_filehandler.flush()
-
+        if not self._info_regex:
+            raise RuntimeError("missing regex for parsing output",pformat(self.generate_cli_from_options()))
+        
         result = self._info_regex.match(line)  # check if it's an info header
         if result:
             info_data = result.groupdict()
@@ -433,6 +439,8 @@ class IPerfInstance(object):
     def generate_cli_from_options(self):
         _cli = []
         if self.use_linux_namespace:
+            if self.use_linux_namespace not in list(netns.listnetns()):
+                raise NameSpaceNotFoundError(f"Namespace {self.use_linux_namespace} cannot be found.")
             _cli.extend("ip netns exec {0}".format(self.use_linux_namespace).split(" "))
         _cli.append(self.iperf_binary_path)
         _cli.append("-e")
@@ -469,7 +477,7 @@ class IPerfInstance(object):
                 )
             if self.ttl:
                 _cli.append("-T")
-                _cli.append(self.ttl)
+                _cli.append(str(self.ttl))
 
         else:
             raise ValueError("type must be set to either server or client")
@@ -545,11 +553,13 @@ class IPerfInstance(object):
             del self._cleanup_timer_thread
             self._cleanup_timer_thread = None
         # print(' '.join(self.generate_cli_from_options()))
+        # pprint(self.generate_cli_from_options())
         self._proc = subprocess.Popen(
             self.generate_cli_from_options(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
+
         if not self._output_reader_thread:
             self._output_reader_thread = create_thread_function(
                 target=output_reader, args=(self._proc, self._outq, self)

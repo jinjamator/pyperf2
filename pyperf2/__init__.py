@@ -412,7 +412,7 @@ class IPerfInstance(object):
     def set_options(self, **kwargs):
         for option_name, option_value in kwargs.items():
             if option_name in ["status"]:
-                pass
+                continue
             self.__setattr__(option_name, str(option_value))
         if "pps" in self.bandwidth:
             self.expected_interval_packets = int(

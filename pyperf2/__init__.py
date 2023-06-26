@@ -120,6 +120,8 @@ class IPerfInstance(object):
                 self.currently_has_loss[stream_id] = False
 
         result = self._result_regex.match(line)  # check if it's a report line
+        
+        
         if result:
             report_data = result.groupdict()
             stream_id = report_data["stream_id"]
@@ -146,6 +148,12 @@ class IPerfInstance(object):
                 self._results[stream_id]["summary"] = result.groupdict()
                 self._log.debug("got summary result")
                 return True  # suppress any message for summary
+
+            if is_sender:
+                report_message = copy.copy(report_data)
+                report_message["stream_name"] = self.name
+
+
 
             if is_receiver:
                 report_message = copy.copy(report_data)

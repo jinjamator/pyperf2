@@ -13,7 +13,7 @@ from pprint import pprint, pformat
 import logging
 import datetime
 from pyroute2 import netns
-
+import atexit
 
 def output_reader(proc, outq, parent):
     for line in iter(proc.stdout.readline, b""):
@@ -70,6 +70,8 @@ class IPerfInstance(object):
             self.expected_interval_packets = None
         self._log = logging.getLogger("")
         self._current_event_number = 0
+        atexit.register(self.stop)
+
 
     def __del__(self):
         try:

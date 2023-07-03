@@ -490,6 +490,9 @@ class IPerfInstance(object):
             if self.bind_ip and self.client_source_port:
                 _cli.append("-B")
                 _cli.append("{0}:{1}".format(self.bind_ip, self.client_source_port))
+            elif self.bind_ip:
+                _cli.append("-B")
+                _cli.append(self.bind_ip)
             if self.protocol == "udp":
                 # [  3] local 192.168.51.154 port 54877 connected with 225.0.0.5 port 5001
                 self._result_regex = re.compile(

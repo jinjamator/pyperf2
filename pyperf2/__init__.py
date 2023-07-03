@@ -603,10 +603,11 @@ class IPerfInstance(object):
         self.status = "running"
         time.sleep(0.2)
 
-        self._cleanup_timer_thread = threading.Timer(
-            int(self.test_duration) + 10, self.stop
-        )
-        self._cleanup_timer_thread.start()
+        if self.test_duration:
+            self._cleanup_timer_thread = threading.Timer(
+                int(self.test_duration) + 10, self.stop
+            )
+            self._cleanup_timer_thread.start()
 
         if self._proc.poll() is not None:
             self.stop()

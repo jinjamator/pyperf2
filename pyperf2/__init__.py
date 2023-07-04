@@ -15,6 +15,7 @@ import datetime
 from pyroute2 import netns
 import atexit
 
+
 def output_reader(proc, outq, parent):
     for line in iter(proc.stdout.readline, b""):
         outq.put(line.decode("utf-8"))
@@ -72,7 +73,6 @@ class IPerfInstance(object):
         self._current_event_number = 0
         atexit.register(self.stop)
 
-
     def __del__(self):
         try:
             self._raw_log_filehandler.close()
@@ -126,8 +126,7 @@ class IPerfInstance(object):
                 self.currently_has_loss[stream_id] = False
 
         result = self._result_regex.match(line)  # check if it's a report line
-        
-        
+
         if result:
             report_data = result.groupdict()
             stream_id = report_data["stream_id"]
@@ -158,8 +157,6 @@ class IPerfInstance(object):
             if is_sender:
                 report_message = copy.copy(report_data)
                 report_message["stream_name"] = self.name
-
-
 
             if is_receiver:
                 report_message = copy.copy(report_data)
@@ -460,9 +457,13 @@ class IPerfInstance(object):
             _cli.extend("ip netns exec {0}".format(self.use_linux_namespace).split(" "))
         _cli.append(self.iperf_binary_path)
         _cli.append("-e")
-        if self.test_duration:
+        if int(self.test_duration) and self.type == "client":
             _cli.append("-t")
             _cli.append(self.test_duration)
+        elif int(self.test_duration) > 0:
+            _cli.append("-t")
+            _cli.append(self.test_duration)
+
         if self.type == "server":
             _cli.append("-s")
             if self.bind_ip:
@@ -581,7 +582,7 @@ class IPerfInstance(object):
 
             _cli.append("-S")
             _cli.append(self.dscp)
-
+        # print(" ".join(_cli))
         return _cli
 
     def start(self, create_thread_function=threading.Thread):
@@ -607,7 +608,8 @@ class IPerfInstance(object):
         self._running = True
         self.status = "running"
         time.sleep(0.2)
-        if int(self.test_duration)>0:
+
+        if int(self.test_duration) > 0:
             self._cleanup_timer_thread = threading.Timer(
                 int(self.test_duration) + 10, self.stop
             )

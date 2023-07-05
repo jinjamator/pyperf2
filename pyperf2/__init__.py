@@ -457,15 +457,13 @@ class IPerfInstance(object):
             _cli.extend("ip netns exec {0}".format(self.use_linux_namespace).split(" "))
         _cli.append(self.iperf_binary_path)
         _cli.append("-e")
-        if int(self.test_duration) and self.type == "client":
-            _cli.append("-t")
-            _cli.append(self.test_duration)
-        elif int(self.test_duration) > 0:
-            _cli.append("-t")
-            _cli.append(self.test_duration)
 
         if self.type == "server":
             _cli.append("-s")
+            if int(self.test_duration) > 0:
+                _cli.append("-t")
+                _cli.append(self.test_duration)
+
             if self.bind_ip:
                 _cli.append("-B")
                 _cli.append(self.bind_ip)
@@ -488,6 +486,10 @@ class IPerfInstance(object):
             if not self.server_ip:
                 raise ValueError("Client needs server_ip to be set")
             _cli.append(self.server_ip)
+            if self.test_duration:
+                _cli.append("-t")
+                _cli.append(self.test_duration)
+
             if self.bind_ip and self.client_source_port:
                 _cli.append("-B")
                 _cli.append("{0}:{1}".format(self.bind_ip, self.client_source_port))

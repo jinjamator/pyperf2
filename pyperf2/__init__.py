@@ -582,9 +582,6 @@ class IPerfInstance(object):
             else:
                 raise ValueError(f'"{self.dscp}" is not a valid DSCP Value')
 
-            _cli.append("-S")
-            _cli.append(self.dscp)
-        # print(" ".join(_cli))
         return _cli
 
     def start(self, create_thread_function=threading.Thread):

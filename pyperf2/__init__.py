@@ -527,14 +527,13 @@ class IPerfInstance(object):
         _cli.append("-i")
         _cli.append(self.report_interval)
 
-        _cli.append("-b")
+        
         if self.protocol == "tcp":
             if "pps" not in self.bandwidth:
+                _cli.append("-b")
                 _cli.append(self.bandwidth)
-            else:
-                _cli.append("1M")
 
-        if self.protocol == "udp":
+        if self.protocol == "udp" and self.type=="client":
             _cli.append(self.bandwidth)
 
         _cli.append("-p")
@@ -590,7 +589,7 @@ class IPerfInstance(object):
             self._cleanup_timer_thread.join()
             del self._cleanup_timer_thread
             self._cleanup_timer_thread = None
-        # print(' '.join(self.generate_cli_from_options()))
+        self._log.debug(' '.join(self.generate_cli_from_options()))
         # pprint(self.generate_cli_from_options())
         self._proc = subprocess.Popen(
             self.generate_cli_from_options(),

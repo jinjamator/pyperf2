@@ -534,6 +534,7 @@ class IPerfInstance(object):
                 _cli.append(self.bandwidth)
 
         if self.protocol == "udp" and self.type=="client":
+            _cli.append("-b")
             _cli.append(self.bandwidth)
 
         _cli.append("-p")

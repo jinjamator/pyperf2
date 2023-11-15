@@ -42,7 +42,7 @@ class IPerfInstance(object):
         self.name = None
         self._running = False
         self.realtime = True
-        self.bandwidth = "1000pps"
+        self.bandwidth = ""
         self.port = "5001"
         self.status = "configured"
         self.packet_len = "1470"
@@ -137,6 +137,8 @@ class IPerfInstance(object):
                 is_receiver = True
                 packets_lost = int(report_data["packets_lost"])
                 packets_received = int(report_data["packets_received"])
+                if not self.expected_interval_packets:
+                    self.expected_interval_packets=packets_received
             else:
                 is_sender = True
 

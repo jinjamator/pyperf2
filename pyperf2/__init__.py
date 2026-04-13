@@ -530,7 +530,7 @@ class IPerfInstance(object):
         _cli.append(self.report_interval)
 
         
-        if self.protocol == "tcp":
+        if self.protocol == "tcp" and self.bandwidth:
             if "pps" not in self.bandwidth:
                 _cli.append("-b")
                 _cli.append(self.bandwidth)

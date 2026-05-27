@@ -64,6 +64,7 @@ class IPerfInstance(object):
         self.ttl = 255
         self.loss_threshold = 0  # configurable: min packets_lost to count as real loss
         self.use_iperf_loss_counter = None  # None=auto, True=always trust iperf, False=always use heuristic
+        self.warmup_intervals = 0  # number of leading intervals to skip before loss detection starts
 
         if "pps" in self.bandwidth:
             self.expected_interval_packets = int(
@@ -175,6 +176,24 @@ class IPerfInstance(object):
             if is_receiver:
                 report_message = copy.copy(report_data)
                 report_message["stream_name"] = self.name
+
+                _in_warmup = (
+                    self.warmup_intervals > 0
+                    and len(self._results[stream_id]["detail"]) < self.warmup_intervals
+                )
+
+                if _in_warmup:
+                    # During warmup: keep updating the baseline so it reflects the
+                    # true steady-state rate, but suppress all loss detection and
+                    # the packetloss callback. Data callback still fires so callers
+                    # can observe the ramp-up if they wish.
+                    if not self._expected_packets_from_config:
+                        if packets_received > 0:
+                            self.expected_interval_packets = packets_received
+                    self._results[stream_id]["detail"].append(report_message)
+                    for callback, args in self._on_data_callbacks:
+                        callback(report_message, **args)
+                    return True
 
                 _use_heuristic = (
                     self.use_iperf_loss_counter is False  # explicitly forced
@@ -445,7 +464,7 @@ class IPerfInstance(object):
             self._outq.put(line.decode("utf-8"))
 
     def set_options(self, **kwargs):
-        _int_options = {"loss_threshold"}
+        _int_options = {"loss_threshold", "warmup_intervals"}
         _bool_options = {"use_iperf_loss_counter"}
         for option_name, option_value in kwargs.items():
             if option_name in ["status"]:

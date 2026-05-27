@@ -17,6 +17,11 @@ Pyperf2 has following features:
     * get results of client and server instances by parsing output to python datastructures.
     * register callbacks for packetloss and intermediate results.
     * linux namespace support (requires ip command of iproute2 package)
+    * configurable loss detection: trust iperf's built-in counter or use an
+      expected-minus-received heuristic for compatibility with older iperf2 builds
+    * configurable loss threshold to suppress timing jitter noise
+    * warmup / ramp-up period: suppress loss detection for the first N intervals
+      so streams can stabilise before measurement begins
 
 
 Installation
@@ -66,74 +71,145 @@ Create a unicast udp 1000pps setup and test for 10 seconds
         sleep(1)
 
 
-Configure loss detection mode and threshold
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Loss Detection
+--------------
 
-Two options control how packet loss is detected from iperf2 output:
+Background
+^^^^^^^^^^
 
-**use_iperf_loss_counter** (``None`` / ``True`` / ``False``, default ``None``)
-  Selects the loss detection source.
+iperf2 reports per-interval packet loss in the UDP receiver output. Older
+builds (< 2.0.13) sometimes reported ``packets_lost = 0`` even when loss
+occurred; the reliable figure was only available in the final summary line.
+Pyperf2 originally worked around this with an *expected-minus-received
+heuristic*: if fewer packets arrived than expected (based on the configured
+``bandwidth`` in ``pps``), the shortfall was counted as loss.
 
-  ``None`` — *auto* (default): trust iperf's ``packets_lost`` field directly,
-  **unless** ``bandwidth`` is given in ``pps`` format, in which case the
-  expected-minus-received heuristic is used. This provides backwards
-  compatibility with older iperf2 builds (< 2.0.13) that did not report
-  per-interval loss reliably.
+Modern iperf2 (≥ 2.0.13) reports per-interval loss correctly. The heuristic
+is no longer needed and can produce false positives — for example when many
+streams start simultaneously, the first interval may receive slightly more
+packets than steady state (connection establishment timing), inflating the
+baseline so every subsequent full interval looks like it lost packets.
 
-  ``True`` — always trust iperf's ``packets_lost`` counter. Recommended for
-  iperf2 ≥ 2.0.13. Eliminates false positives caused by startup burst
-  inflation when many streams are started simultaneously.
+Three options let you tune loss detection to match your iperf2 version and
+deployment:
 
-  ``False`` — always use the heuristic regardless of iperf output. Intended
-  for very old iperf2 builds where the per-interval counter is known to be
-  zero even when loss occurs.
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 60
 
-**loss_threshold** (integer ≥ 0, default ``0``)
-  Minimum number of inferred lost packets per interval required to register a
-  loss event. Only meaningful when the heuristic is active (i.e.
-  ``use_iperf_loss_counter`` is ``False`` or auto with a ``pps`` bandwidth).
-  A value of ``4`` suppresses spurious events caused by interval timing jitter
-  where a full window delivers 1–4 fewer packets than the configured rate
-  without any real loss occurring.
+   * - Option
+     - Default
+     - Purpose
+   * - ``use_iperf_loss_counter``
+     - ``None``
+     - Selects the loss source: iperf counter, heuristic, or auto
+   * - ``loss_threshold``
+     - ``0``
+     - Minimum lost packets per interval to register a loss event
+   * - ``warmup_intervals``
+     - ``0``
+     - Leading intervals to skip before loss detection starts
+
+use_iperf_loss_counter
+^^^^^^^^^^^^^^^^^^^^^^
+
+``None`` — *auto* (default): trust iperf's ``packets_lost`` field directly,
+**unless** ``bandwidth`` is given in ``pps`` format, in which case the
+heuristic is used. This preserves backwards compatibility with older iperf2
+builds.
+
+``True`` — always trust iperf's ``packets_lost`` counter. Recommended for
+iperf2 ≥ 2.0.13. Eliminates false positives entirely — if iperf says 0 lost,
+pyperf2 accepts that without second-guessing it.
+
+``False`` — always use the expected-minus-received heuristic, regardless of
+what iperf reports. For very old iperf2 builds where the per-interval counter
+is known to be unreliable.
+
+loss_threshold
+^^^^^^^^^^^^^^
+
+Minimum number of inferred lost packets per interval required to register a
+loss event. Only meaningful when the heuristic is active (``use_iperf_loss_counter``
+is ``False``, or ``None`` with a ``pps`` bandwidth). A value of ``4``
+suppresses spurious events caused by interval timing jitter where a full
+window delivers 1–4 fewer packets than the configured rate without any real
+loss occurring.
+
+warmup_intervals
+^^^^^^^^^^^^^^^^
+
+Number of leading report intervals to skip before loss detection starts.
+During the warmup period:
+
+* the packetloss callback is **not** called
+* no loss events are recorded
+* the data callback **is** still called so callers can observe the ramp-up
+* the ``expected_interval_packets`` baseline is updated from observed traffic,
+  so it reflects the true steady-state rate by the time warmup ends
+
+The warmup duration in wall-clock seconds is
+``warmup_intervals × report_interval``.
+
+Recommended settings
+^^^^^^^^^^^^^^^^^^^^
+
++------------------------------+------------------------------------+---------------------+
+| Scenario                     | Recommended settings               | Why                 |
++==============================+====================================+=====================+
+| Modern iperf2 (≥ 2.0.13),    | ``use_iperf_loss_counter=True``    | Fully accurate;     |
+| single stream                | ``warmup_intervals=0``             | no ramp-up needed   |
++------------------------------+------------------------------------+---------------------+
+| Modern iperf2, many streams  | ``use_iperf_loss_counter=True``    | Skip inflated first |
+| started simultaneously       | ``warmup_intervals=1``             | interval            |
++------------------------------+------------------------------------+---------------------+
+| Old iperf2 (< 2.0.13)        | ``use_iperf_loss_counter=False``   | Heuristic needed;   |
+|                              | ``loss_threshold=4``               | filter jitter noise |
++------------------------------+------------------------------------+---------------------+
+| Unknown iperf2 version       | leave all at defaults              | Auto mode is safe   |
++------------------------------+------------------------------------+---------------------+
 
 .. code-block:: python
 
     from pyperf2 import Server, Client
     from time import sleep
 
-    # Modern iperf2 (>= 2.0.13): trust iperf's loss counter directly.
+    # Modern iperf2, 12 streams started in parallel — skip first interval,
+    # trust iperf's loss counter directly.
     receiver = Server()
     receiver.set_options(
         protocol="udp",
         port="5201",
-        test_duration=15,
+        test_duration=60,
         bandwidth="1000pps",
         use_iperf_loss_counter=True,
+        warmup_intervals=1,
         loss_threshold=0,
     )
     receiver.start()
 
-    # Old iperf2: use heuristic with a noise floor of 4 packets.
+    # Old iperf2 compat — heuristic with noise floor.
     receiver_compat = Server()
     receiver_compat.set_options(
         protocol="udp",
         port="5202",
-        test_duration=15,
+        test_duration=60,
         bandwidth="1000pps",
         use_iperf_loss_counter=False,
         loss_threshold=4,
+        warmup_intervals=0,
     )
     receiver_compat.start()
 
     sender = Client()
     sender.set_options(protocol="udp", server_ip="127.0.0.1", port="5201",
-                       bandwidth="1000pps", test_duration=12)
+                       bandwidth="1000pps", test_duration=55)
     sender.start()
     while sender.status != "stopped":
         sleep(1)
 
 See ``examples/loss_detection_modes.py`` for a complete side-by-side
-demonstration of all three modes.
+demonstration of all four modes.
 
 
 Supported Parameters

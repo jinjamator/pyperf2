@@ -6,7 +6,6 @@ import time
 import json
 import re
 import os
-import pyjq
 import copy
 from decimal import Decimal
 from pprint import pprint, pformat
@@ -393,7 +392,7 @@ class IPerfInstance(object):
                 callback(report_message, **args)
 
     def get_result_events(self):
-        results_with_packet_loss = pyjq.all('.[] | select(.packets_lost!="0")', data)
+        results_with_packet_loss = [r for r in data if r.get("packets_lost", "0") != "0"]
         events = []
         event_data = []
         event_begin = None

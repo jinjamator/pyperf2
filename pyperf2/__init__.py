@@ -62,13 +62,16 @@ class IPerfInstance(object):
         self._raw_log_filehandler = None
         self._creation_time = datetime.datetime.now().replace(microsecond=0).isoformat()
         self.ttl = 255
+        self.loss_threshold = 0  # configurable: min packets_lost to count as real loss
 
         if "pps" in self.bandwidth:
             self.expected_interval_packets = int(
                 Decimal(self.report_interval) * Decimal(self.bandwidth[:-3])
             )
+            self._expected_packets_from_config = True
         else:
             self.expected_interval_packets = None
+            self._expected_packets_from_config = False
         self._log = logging.getLogger("")
         self._current_event_number = 0
         atexit.register(self.stop)
@@ -137,8 +140,16 @@ class IPerfInstance(object):
                 is_receiver = True
                 packets_lost = int(report_data["packets_lost"])
                 packets_received = int(report_data["packets_received"])
-                if not self.expected_interval_packets:
-                    self.expected_interval_packets=packets_received
+                if not self._expected_packets_from_config:
+                    # No pre-configured pps rate: trust iperf's packets_lost directly.
+                    # Only use expected_interval_packets for the 100% loss path below
+                    # where iperf reports 0 received (can't infer loss count otherwise).
+                    if not self.expected_interval_packets:
+                        self.expected_interval_packets = packets_received
+                    elif packets_lost == 0 and packets_received < self.expected_interval_packets:
+                        # Steady-state rate is lower than the first interval — update
+                        # the baseline so 100% loss detection stays accurate.
+                        self.expected_interval_packets = packets_received
             else:
                 is_sender = True
 
@@ -164,24 +175,24 @@ class IPerfInstance(object):
                 report_message = copy.copy(report_data)
                 report_message["stream_name"] = self.name
 
-                if packets_received < self.expected_interval_packets:
+                if self._expected_packets_from_config and packets_lost == 0 and packets_received < self.expected_interval_packets:
+                    # Old iperf compat: iperf reports 0 lost but we received fewer
+                    # packets than the pre-configured rate — infer loss from the delta.
                     probably_packets_lost = (
                         self.expected_interval_packets - packets_received
                     )
-                    # print('probably lost {0}'.format(probably_packets_lost))
                     if (
-                        probably_packets_lost > 4
-                    ):  # ignore minimal loss because it could also be a timing issue
+                        probably_packets_lost > self.loss_threshold
+                    ):  # ignore minimal shortfall that could be a timing issue
                         report_message["packets_lost"] = probably_packets_lost
                         report_message[
                             "packets_received"
                         ] = self.expected_interval_packets
                         packets_lost = probably_packets_lost
                         packets_received = self.expected_interval_packets
-                        # print('{0} {1}'.format(packets_lost, packets_received))
 
                 if (
-                    packets_lost > self.expected_interval_packets + 4
+                    packets_lost > self.expected_interval_packets + self.loss_threshold
                 ):  # handle summary packet loss message
                     # pprint( self._results[stream_id]['events'])
                     try:
@@ -429,16 +440,22 @@ class IPerfInstance(object):
             self._outq.put(line.decode("utf-8"))
 
     def set_options(self, **kwargs):
+        _int_options = {"loss_threshold"}
         for option_name, option_value in kwargs.items():
             if option_name in ["status"]:
                 continue
-            self.__setattr__(option_name, str(option_value))
+            if option_name in _int_options:
+                self.__setattr__(option_name, int(option_value))
+            else:
+                self.__setattr__(option_name, str(option_value))
         if "pps" in self.bandwidth:
             self.expected_interval_packets = int(
                 Decimal(self.report_interval) * Decimal(self.bandwidth[:-3])
             )
+            self._expected_packets_from_config = True
         else:
             self.expected_interval_packets = None
+            self._expected_packets_from_config = False
         if self.test_duration == None:
             self.test_duration = 0
 

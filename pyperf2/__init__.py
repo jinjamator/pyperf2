@@ -63,6 +63,7 @@ class IPerfInstance(object):
         self._creation_time = datetime.datetime.now().replace(microsecond=0).isoformat()
         self.ttl = 255
         self.loss_threshold = 0  # configurable: min packets_lost to count as real loss
+        self.use_iperf_loss_counter = None  # None=auto, True=always trust iperf, False=always use heuristic
 
         if "pps" in self.bandwidth:
             self.expected_interval_packets = int(
@@ -175,7 +176,11 @@ class IPerfInstance(object):
                 report_message = copy.copy(report_data)
                 report_message["stream_name"] = self.name
 
-                if self._expected_packets_from_config and packets_lost == 0 and packets_received < self.expected_interval_packets:
+                _use_heuristic = (
+                    self.use_iperf_loss_counter is False  # explicitly forced
+                    or (self.use_iperf_loss_counter is None and self._expected_packets_from_config)  # auto: pps config → old iperf compat
+                )
+                if _use_heuristic and packets_lost == 0 and packets_received < self.expected_interval_packets:
                     # Old iperf compat: iperf reports 0 lost but we received fewer
                     # packets than the pre-configured rate — infer loss from the delta.
                     probably_packets_lost = (
@@ -441,11 +446,17 @@ class IPerfInstance(object):
 
     def set_options(self, **kwargs):
         _int_options = {"loss_threshold"}
+        _bool_options = {"use_iperf_loss_counter"}
         for option_name, option_value in kwargs.items():
             if option_name in ["status"]:
                 continue
             if option_name in _int_options:
                 self.__setattr__(option_name, int(option_value))
+            elif option_name in _bool_options:
+                if option_value is None:
+                    self.__setattr__(option_name, None)
+                else:
+                    self.__setattr__(option_name, bool(option_value))
             else:
                 self.__setattr__(option_name, str(option_value))
         if "pps" in self.bandwidth:

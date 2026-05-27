@@ -66,6 +66,76 @@ Create a unicast udp 1000pps setup and test for 10 seconds
         sleep(1)
 
 
+Configure loss detection mode and threshold
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Two options control how packet loss is detected from iperf2 output:
+
+**use_iperf_loss_counter** (``None`` / ``True`` / ``False``, default ``None``)
+  Selects the loss detection source.
+
+  ``None`` — *auto* (default): trust iperf's ``packets_lost`` field directly,
+  **unless** ``bandwidth`` is given in ``pps`` format, in which case the
+  expected-minus-received heuristic is used. This provides backwards
+  compatibility with older iperf2 builds (< 2.0.13) that did not report
+  per-interval loss reliably.
+
+  ``True`` — always trust iperf's ``packets_lost`` counter. Recommended for
+  iperf2 ≥ 2.0.13. Eliminates false positives caused by startup burst
+  inflation when many streams are started simultaneously.
+
+  ``False`` — always use the heuristic regardless of iperf output. Intended
+  for very old iperf2 builds where the per-interval counter is known to be
+  zero even when loss occurs.
+
+**loss_threshold** (integer ≥ 0, default ``0``)
+  Minimum number of inferred lost packets per interval required to register a
+  loss event. Only meaningful when the heuristic is active (i.e.
+  ``use_iperf_loss_counter`` is ``False`` or auto with a ``pps`` bandwidth).
+  A value of ``4`` suppresses spurious events caused by interval timing jitter
+  where a full window delivers 1–4 fewer packets than the configured rate
+  without any real loss occurring.
+
+.. code-block:: python
+
+    from pyperf2 import Server, Client
+    from time import sleep
+
+    # Modern iperf2 (>= 2.0.13): trust iperf's loss counter directly.
+    receiver = Server()
+    receiver.set_options(
+        protocol="udp",
+        port="5201",
+        test_duration=15,
+        bandwidth="1000pps",
+        use_iperf_loss_counter=True,
+        loss_threshold=0,
+    )
+    receiver.start()
+
+    # Old iperf2: use heuristic with a noise floor of 4 packets.
+    receiver_compat = Server()
+    receiver_compat.set_options(
+        protocol="udp",
+        port="5202",
+        test_duration=15,
+        bandwidth="1000pps",
+        use_iperf_loss_counter=False,
+        loss_threshold=4,
+    )
+    receiver_compat.start()
+
+    sender = Client()
+    sender.set_options(protocol="udp", server_ip="127.0.0.1", port="5201",
+                       bandwidth="1000pps", test_duration=12)
+    sender.start()
+    while sender.status != "stopped":
+        sleep(1)
+
+See ``examples/loss_detection_modes.py`` for a complete side-by-side
+demonstration of all three modes.
+
+
 Supported Parameters
 ---------------------
 

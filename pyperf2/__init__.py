@@ -199,12 +199,13 @@ class IPerfInstance(object):
                 #
                 # Recovery summary: iperf reports accumulated loss from the whole blackout
                 # in the first post-reconnect interval. packets_received (= total iperf saw)
-                # exceeds what a single interval can hold → this line spans the gap.
+                # must be substantially larger than one interval's expected capacity —
+                # use 1.5× to avoid false positives from normal ±1% jitter.
                 is_recovery_summary = (
                     self.currently_has_loss[stream_id]
                     and packets_lost > 0
                     and self.expected_interval_packets is not None
-                    and packets_received > self.expected_interval_packets
+                    and packets_received > self.expected_interval_packets * 1.5
                 )
 
                 # _event_trigger: how many packets are missing this interval.
@@ -229,13 +230,22 @@ class IPerfInstance(object):
                     report_message["packets_lost"] = 0              # unconfirmed — delayed
                     report_message["packets_received"] = 0
 
+                elif packets_lost > 0:
+                    # iperf directly reports confirmed per-interval loss (e.g. 503/1000).
+                    # No summary needed — loss is known immediately.
+                    connectivity_lost = False
+                    _event_trigger = packets_lost
+                    self._delayed_packets[stream_id] += packets_lost
+                    # report_message["packets_lost"] stays as-is (confirmed by iperf)
+                    report_message["packets_received"] = actual_received
+
                 elif (self._expected_packets_from_config
                         and self.expected_interval_packets
                         and actual_received < self.expected_interval_packets):
-                    # Partial shortfall vs configured rate — could still arrive, not yet lost.
+                    # Inferred partial shortfall vs configured rate (iperf says 0 lost).
+                    # These packets may appear in the recovery summary — treat as delayed.
                     connectivity_lost = False
-                    deficit = self.expected_interval_packets - actual_received
-                    _event_trigger = max(packets_lost, deficit)
+                    _event_trigger = self.expected_interval_packets - actual_received
                     self._delayed_packets[stream_id] += _event_trigger
                     report_message["packets_lost"] = 0              # unconfirmed — delayed
                     report_message["packets_received"] = actual_received

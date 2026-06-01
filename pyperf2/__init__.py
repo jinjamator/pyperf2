@@ -244,7 +244,12 @@ class IPerfInstance(object):
                     report_message["packets_received"] = actual_received
 
                 report_message["connectivity_lost"] = connectivity_lost
-                report_message["delayed_packets"] = self._delayed_packets[stream_id]
+                # Recovery summary: _delayed_packets was reset to 0, so report the
+                # definitive iperf count directly so the consumer sees the final total.
+                report_message["delayed_packets"] = (
+                    packets_lost if is_recovery_summary
+                    else self._delayed_packets[stream_id]
+                )
 
                 packet_loss_event_message = {
                     "event_number": self._current_event_number,

@@ -55,14 +55,14 @@ class IPerfInstance(object):
         self._on_data_callbacks = []
         self._on_packetloss_callbacks = []
         self.currently_has_loss = {}
+        self._delayed_packets = {}
         self._output_reader_thread = None
         self._cleanup_timer_thread = None
         self._raw_log_filepath = None
         self._raw_log_filehandler = None
         self._creation_time = datetime.datetime.now().replace(microsecond=0).isoformat()
         self.ttl = 255
-        self.loss_threshold = 0  # configurable: min packets_lost to count as real loss
-        self.use_iperf_loss_counter = None  # None=auto, True=always trust iperf, False=always use heuristic
+        self.loss_threshold = 0  # configurable: min packets_lost per interval to count as real loss
         self.warmup_intervals = 0  # number of leading intervals to skip before loss detection starts
 
         if "pps" in self.bandwidth:
@@ -128,6 +128,7 @@ class IPerfInstance(object):
                     "timestamp": timestamp,
                 }
                 self.currently_has_loss[stream_id] = False
+                self._delayed_packets[stream_id] = 0
 
         result = self._result_regex.match(line)  # check if it's a report line
 
@@ -141,16 +142,6 @@ class IPerfInstance(object):
                 is_receiver = True
                 packets_lost = int(report_data["packets_lost"])
                 packets_received = int(report_data["packets_received"])
-                if not self._expected_packets_from_config:
-                    # No pre-configured pps rate: trust iperf's packets_lost directly.
-                    # Only use expected_interval_packets for the 100% loss path below
-                    # where iperf reports 0 received (can't infer loss count otherwise).
-                    if not self.expected_interval_packets:
-                        self.expected_interval_packets = packets_received
-                    elif packets_lost == 0 and packets_received < self.expected_interval_packets:
-                        # Steady-state rate is lower than the first interval — update
-                        # the baseline so 100% loss detection stays accurate.
-                        self.expected_interval_packets = packets_received
             else:
                 is_sender = True
 
@@ -182,10 +173,6 @@ class IPerfInstance(object):
                 )
 
                 if _in_warmup:
-                    # During warmup: keep updating the baseline so it reflects the
-                    # true steady-state rate, but suppress all loss detection and
-                    # the packetloss callback. Data callback still fires so callers
-                    # can observe the ramp-up if they wish.
                     if not self._expected_packets_from_config:
                         if packets_received > 0:
                             self.expected_interval_packets = packets_received
@@ -194,56 +181,27 @@ class IPerfInstance(object):
                         callback(report_message, **args)
                     return True
 
-                _use_heuristic = (
-                    self.use_iperf_loss_counter is False  # explicitly forced
-                    or (self.use_iperf_loss_counter is None and self._expected_packets_from_config)  # auto: pps config → old iperf compat
-                )
-                if _use_heuristic and packets_lost == 0 and packets_received < self.expected_interval_packets:
-                    # Old iperf compat: iperf reports 0 lost but we received fewer
-                    # packets than the pre-configured rate — infer loss from the delta.
-                    probably_packets_lost = (
-                        self.expected_interval_packets - packets_received
-                    )
-                    if (
-                        probably_packets_lost > self.loss_threshold
-                    ):  # ignore minimal shortfall that could be a timing issue
-                        report_message["packets_lost"] = probably_packets_lost
-                        report_message[
-                            "packets_received"
-                        ] = self.expected_interval_packets
-                        packets_lost = probably_packets_lost
-                        packets_received = self.expected_interval_packets
+                # Update expected baseline from healthy intervals
+                if not self._expected_packets_from_config and packets_lost == 0 and packets_received > 0:
+                    if not self.expected_interval_packets:
+                        self.expected_interval_packets = packets_received
+                    elif packets_received < self.expected_interval_packets:
+                        self.expected_interval_packets = packets_received
 
-                if (
-                    packets_lost > self.expected_interval_packets + self.loss_threshold
-                ):  # handle summary packet loss message
-                    # pprint( self._results[stream_id]['events'])
-                    try:
-                        packets_lost = (
-                            packets_lost
-                            - self._results[stream_id]["events"][-1][
-                                "total_packets_lost_since_event_start"
-                            ]
-                        )
-                        packets_received = self.expected_interval_packets - packets_lost
-                        report_message["packets_lost"] = packets_lost
-                        report_message["packets_received"] = packets_received
-                        # print('{0} {1}'.format(packets_lost,packets_received))
+                # When nothing received, iperf cannot count what it missed — fill from baseline
+                connectivity_lost = (packets_received == 0)
+                if connectivity_lost and self.expected_interval_packets:
+                    packets_lost = self.expected_interval_packets
+                    report_message["packets_lost"] = packets_lost
 
-                    except (
-                        IndexError
-                    ):  # loss without event registred, can only be at interval_begin 0.0 -> ignore
-                        # print('----------------------index error------------------------')
-                        if interval_begin == 0:
-                            report_message["packets_lost"] = 0
-                            report_message[
-                                "packets_received"
-                            ] = self.expected_interval_packets
-                        else:
-                            self._log.debug(pformat(self._results))
-                            self._log.debug(pformat(report_message))
-                            self._log.debug(line)
-                            raise Exception("Something went wrong")
+                # delayed_packets: running total of lost packets during an active loss event
+                if packets_lost > self.loss_threshold:
+                    self._delayed_packets[stream_id] += packets_lost
+                else:
+                    self._delayed_packets[stream_id] = 0
+
+                report_message["connectivity_lost"] = connectivity_lost
+                report_message["delayed_packets"] = self._delayed_packets[stream_id]
 
                 packet_loss_event_message = {
                     "event_number": self._current_event_number,
@@ -251,6 +209,8 @@ class IPerfInstance(object):
                     "stream_name": self.name,
                     "status": "",
                     "total_packets_lost_since_event_start": 0,
+                    "delayed_packets": 0,
+                    "connectivity_lost": connectivity_lost,
                     "packets_lost": packets_lost,
                     "packets_received": packets_received,
                     "event_begin": interval_begin,
@@ -260,122 +220,68 @@ class IPerfInstance(object):
                     "timestamp_end": None,
                 }
 
-                if packets_received == 0:  # handle 100% packet loss situation
-                    report_message["packets_lost"] = self.expected_interval_packets
-                    packets_lost = self.expected_interval_packets
+                if packets_received == 0:  # handle 100% connectivity loss
                     if self.currently_has_loss[stream_id]:
-                        self._log.debug(
-                            "losing all packets, receiving nothing, should receive {} (cont.)".format(
-                                self.bandwidth
-                            )
-                        )
-                        self._results[stream_id]["events"][-1][
-                            "total_packets_lost_since_event_start"
-                        ] += packets_lost
-                        self._results[stream_id]["events"][-1][
-                            "timestamp_current"
-                        ] = timestamp
-                        self._results[stream_id]["events"][-1][
-                            "packets_lost"
-                        ] = packets_lost
-                        self._results[stream_id]["events"][-1][
-                            "status"
-                        ] = "losing all packets (cont.)"
-                        self._results[stream_id]["events"][-1][
-                            "packets_received"
-                        ] = packets_received
-                        packet_loss_event_message = copy.copy(
-                            self._results[stream_id]["events"][-1]
-                        )
-
+                        self._log.debug("connectivity lost (cont.)")
+                        self._results[stream_id]["events"][-1]["total_packets_lost_since_event_start"] += packets_lost
+                        self._results[stream_id]["events"][-1]["delayed_packets"] = self._delayed_packets[stream_id]
+                        self._results[stream_id]["events"][-1]["timestamp_current"] = timestamp
+                        self._results[stream_id]["events"][-1]["packets_lost"] = packets_lost
+                        self._results[stream_id]["events"][-1]["connectivity_lost"] = True
+                        self._results[stream_id]["events"][-1]["status"] = "connectivity lost (cont.)"
+                        self._results[stream_id]["events"][-1]["packets_received"] = packets_received
+                        packet_loss_event_message = copy.copy(self._results[stream_id]["events"][-1])
                     else:
-                        self._log.debug(
-                            "losing all packets, receiving nothing, should receive {}".format(
-                                self.bandwidth
-                            )
-                        )
-                        self._current_event_number += 1
-                        packet_loss_event_message[
-                            "event_number"
-                        ] = self._current_event_number
-                        packet_loss_event_message[
-                            "packets_lost"
-                        ] = (
-                            self.expected_interval_packets
-                        )  # set lost packets to pps because iperf reports 0 lost which breaks graph
-                        packet_loss_event_message[
-                            "total_packets_lost_since_event_start"
-                        ] = packets_lost
-                        packet_loss_event_message["status"] = "losing all packets"
-                        packet_loss_event_message["packets_received"] = packets_received
-                        self._results[stream_id]["events"].append(
-                            packet_loss_event_message
-                        )
+                        self._log.debug("connectivity lost")
                         self.currently_has_loss[stream_id] = True
+                        self._current_event_number += 1
+                        packet_loss_event_message["event_number"] = self._current_event_number
+                        packet_loss_event_message["packets_lost"] = packets_lost
+                        packet_loss_event_message["total_packets_lost_since_event_start"] = packets_lost
+                        packet_loss_event_message["delayed_packets"] = packets_lost
+                        packet_loss_event_message["connectivity_lost"] = True
+                        packet_loss_event_message["status"] = "connectivity lost"
+                        packet_loss_event_message["packets_received"] = packets_received
+                        self._results[stream_id]["events"].append(packet_loss_event_message)
 
-                elif packets_lost > 0:  # handle packet loss situation
-                    if self.currently_has_loss[
-                        stream_id
-                    ]:  # handle ongoing packet loss situation
+                elif packets_lost > self.loss_threshold:  # handle partial packet loss
+                    if self.currently_has_loss[stream_id]:
                         self._log.debug("ongoing packet loss detected")
-                        self._results[stream_id]["events"][-1][
-                            "total_packets_lost_since_event_start"
-                        ] += packets_lost
-                        self._results[stream_id]["events"][-1][
-                            "timestamp_current"
-                        ] = timestamp
-                        self._results[stream_id]["events"][-1][
-                            "status"
-                        ] = "losing packets (cont.)"
-                        self._results[stream_id]["events"][-1][
-                            "packets_lost"
-                        ] = packets_lost
-                        self._results[stream_id]["events"][-1][
-                            "packets_received"
-                        ] = packets_received
-
-                        packet_loss_event_message = copy.copy(
-                            self._results[stream_id]["events"][-1]
-                        )
-
-                    else:  # handle new packet loss situation
+                        self._results[stream_id]["events"][-1]["total_packets_lost_since_event_start"] += packets_lost
+                        self._results[stream_id]["events"][-1]["delayed_packets"] = self._delayed_packets[stream_id]
+                        self._results[stream_id]["events"][-1]["timestamp_current"] = timestamp
+                        self._results[stream_id]["events"][-1]["status"] = "losing packets (cont.)"
+                        self._results[stream_id]["events"][-1]["packets_lost"] = packets_lost
+                        self._results[stream_id]["events"][-1]["connectivity_lost"] = False
+                        self._results[stream_id]["events"][-1]["packets_received"] = packets_received
+                        packet_loss_event_message = copy.copy(self._results[stream_id]["events"][-1])
+                    else:
                         self._log.debug("begin of packet loss detected")
                         self.currently_has_loss[stream_id] = True
                         self._current_event_number += 1
-                        packet_loss_event_message[
-                            "event_number"
-                        ] = self._current_event_number
+                        packet_loss_event_message["event_number"] = self._current_event_number
                         packet_loss_event_message["status"] = "losing packets"
-                        packet_loss_event_message[
-                            "total_packets_lost_since_event_start"
-                        ] = packets_lost
-                        self._results[stream_id]["events"].append(
-                            packet_loss_event_message
-                        )
+                        packet_loss_event_message["total_packets_lost_since_event_start"] = packets_lost
+                        packet_loss_event_message["delayed_packets"] = packets_lost
+                        packet_loss_event_message["connectivity_lost"] = False
+                        self._results[stream_id]["events"].append(packet_loss_event_message)
 
-                elif self.currently_has_loss[stream_id]:  # handle end of loss situation
+                elif self.currently_has_loss[stream_id]:  # handle end of loss
                     self._log.debug("end of packet loss detected")
                     self.currently_has_loss[stream_id] = False
-                    self._results[stream_id]["events"][-1][
-                        "timestamp_current"
-                    ] = timestamp
-                    self._results[stream_id]["events"][-1]["timestamp_end"] = timestamp
-                    self._results[stream_id]["events"][-1][
-                        "interval_end"
-                    ] = interval_end
-                    self._results[stream_id]["events"][-1]["status"] = "stable"
-                    self._results[stream_id]["events"][-1][
-                        "packets_lost"
-                    ] = packets_lost
-                    self._results[stream_id]["events"][-1][
-                        "packets_received"
-                    ] = packets_received
+                    self._delayed_packets[stream_id] = 0
+                    event = self._results[stream_id]["events"][-1]
+                    event["timestamp_current"] = timestamp
+                    event["timestamp_end"] = timestamp
+                    event["interval_end"] = interval_end
+                    event["status"] = "stable"
+                    event["packets_lost"] = packets_lost
+                    event["packets_received"] = packets_received
+                    event["connectivity_lost"] = False
+                    event["delayed_packets"] = event["total_packets_lost_since_event_start"]
+                    packet_loss_event_message = copy.copy(event)
 
-                    packet_loss_event_message = copy.copy(
-                        self._results[stream_id]["events"][-1]
-                    )
-
-                else:  # do not send loss event in case of no loss
+                else:  # no loss
                     packet_loss_event_message = False
         else:
             self._log.debug("cannot parse report line: {0}".format(line))
@@ -464,17 +370,11 @@ class IPerfInstance(object):
 
     def set_options(self, **kwargs):
         _int_options = {"loss_threshold", "warmup_intervals"}
-        _bool_options = {"use_iperf_loss_counter"}
         for option_name, option_value in kwargs.items():
-            if option_name in ["status"]:
+            if option_name in ["status", "use_iperf_loss_counter"]:
                 continue
             if option_name in _int_options:
                 self.__setattr__(option_name, int(option_value))
-            elif option_name in _bool_options:
-                if option_value is None:
-                    self.__setattr__(option_name, None)
-                else:
-                    self.__setattr__(option_name, bool(option_value))
             else:
                 self.__setattr__(option_name, str(option_value))
         if "pps" in self.bandwidth:

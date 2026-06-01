@@ -214,12 +214,14 @@ class IPerfInstance(object):
                 _event_trigger = 0
 
                 if is_recovery_summary:
-                    # iperf gives the definitive, authoritative loss count for the outage.
-                    # Only NOW do we confirm packets as truly lost.
+                    # iperf gives the definitive, authoritative loss count.
+                    # Subtract confirmed losses from the accumulated delayed estimate so
+                    # that only genuinely still-pending packets remain as "delayed".
                     connectivity_lost = False
-                    _event_trigger = packets_lost  # definitive, closes the event
+                    _event_trigger = packets_lost
+                    remaining_delayed = max(0, self._delayed_packets[stream_id] - packets_lost)
                     self._delayed_packets[stream_id] = 0
-                    report_message["packets_lost"] = packets_lost   # confirmed by iperf
+                    report_message["packets_lost"] = packets_lost        # confirmed by iperf
                     report_message["packets_received"] = actual_received
 
                 elif actual_received == 0:
@@ -227,15 +229,15 @@ class IPerfInstance(object):
                     connectivity_lost = True
                     _event_trigger = self.expected_interval_packets or 0
                     self._delayed_packets[stream_id] += _event_trigger
-                    report_message["packets_lost"] = 0              # unconfirmed — delayed
+                    report_message["packets_lost"] = 0                   # unconfirmed — delayed
                     report_message["packets_received"] = 0
 
                 elif packets_lost > 0:
                     # iperf directly reports confirmed per-interval loss (e.g. 503/1000).
-                    # No summary needed — loss is known immediately.
+                    # These packets are known lost — do NOT add to delayed (they are
+                    # no longer pending). delayed_packets stays unchanged.
                     connectivity_lost = False
                     _event_trigger = packets_lost
-                    self._delayed_packets[stream_id] += packets_lost
                     # report_message["packets_lost"] stays as-is (confirmed by iperf)
                     report_message["packets_received"] = actual_received
 
@@ -243,11 +245,11 @@ class IPerfInstance(object):
                         and self.expected_interval_packets
                         and actual_received < self.expected_interval_packets):
                     # Inferred partial shortfall vs configured rate (iperf says 0 lost).
-                    # These packets may appear in the recovery summary — treat as delayed.
+                    # Fate unknown — accumulate as delayed until recovery confirms.
                     connectivity_lost = False
                     _event_trigger = self.expected_interval_packets - actual_received
                     self._delayed_packets[stream_id] += _event_trigger
-                    report_message["packets_lost"] = 0              # unconfirmed — delayed
+                    report_message["packets_lost"] = 0                   # unconfirmed — delayed
                     report_message["packets_received"] = actual_received
 
                 else:
@@ -258,7 +260,7 @@ class IPerfInstance(object):
 
                 report_message["connectivity_lost"] = connectivity_lost
                 report_message["delayed_packets"] = (
-                    packets_lost if is_recovery_summary   # definitive total on recovery
+                    remaining_delayed if is_recovery_summary
                     else self._delayed_packets[stream_id]
                 )
 

@@ -207,34 +207,37 @@ class IPerfInstance(object):
                     and packets_received > self.expected_interval_packets
                 )
 
+                # _event_trigger: how many packets are missing this interval.
+                # Used only internally for event state-machine logic — NOT exposed as
+                # packets_lost in report_message (those are unconfirmed until recovery).
+                _event_trigger = 0
+
                 if is_recovery_summary:
                     # iperf gives the definitive, authoritative loss count for the outage.
-                    # packets_lost = truly lost; actual_received = burst that made it through.
+                    # Only NOW do we confirm packets as truly lost.
                     connectivity_lost = False
+                    _event_trigger = packets_lost  # definitive, closes the event
                     self._delayed_packets[stream_id] = 0
-                    report_message["packets_lost"] = packets_lost
+                    report_message["packets_lost"] = packets_lost   # confirmed by iperf
                     report_message["packets_received"] = actual_received
 
                 elif actual_received == 0:
-                    # Complete blackout — iperf reports 0/0 and cannot count what it missed.
-                    # Estimate from the configured/measured expected rate.
+                    # Complete blackout — packets are missing but not yet confirmed lost.
                     connectivity_lost = True
-                    packets_lost = self.expected_interval_packets or 0
-                    self._delayed_packets[stream_id] += packets_lost
-                    report_message["packets_lost"] = packets_lost
+                    _event_trigger = self.expected_interval_packets or 0
+                    self._delayed_packets[stream_id] += _event_trigger
+                    report_message["packets_lost"] = 0              # unconfirmed — delayed
                     report_message["packets_received"] = 0
 
                 elif (self._expected_packets_from_config
                         and self.expected_interval_packets
                         and actual_received < self.expected_interval_packets):
-                    # Partial loss: fewer packets arrived than the configured rate.
-                    # iperf may say 0/N yet; these missing sequence numbers will appear
-                    # as truly lost in the recovery summary when connectivity returns.
+                    # Partial shortfall vs configured rate — could still arrive, not yet lost.
                     connectivity_lost = False
                     deficit = self.expected_interval_packets - actual_received
-                    packets_lost = max(packets_lost, deficit)
-                    self._delayed_packets[stream_id] += packets_lost
-                    report_message["packets_lost"] = packets_lost
+                    _event_trigger = max(packets_lost, deficit)
+                    self._delayed_packets[stream_id] += _event_trigger
+                    report_message["packets_lost"] = 0              # unconfirmed — delayed
                     report_message["packets_received"] = actual_received
 
                 else:
@@ -244,10 +247,8 @@ class IPerfInstance(object):
                     report_message["packets_received"] = actual_received
 
                 report_message["connectivity_lost"] = connectivity_lost
-                # Recovery summary: _delayed_packets was reset to 0, so report the
-                # definitive iperf count directly so the consumer sees the final total.
                 report_message["delayed_packets"] = (
-                    packets_lost if is_recovery_summary
+                    packets_lost if is_recovery_summary   # definitive total on recovery
                     else self._delayed_packets[stream_id]
                 )
 
@@ -259,7 +260,7 @@ class IPerfInstance(object):
                     "total_packets_lost_since_event_start": 0,
                     "delayed_packets": 0,
                     "connectivity_lost": connectivity_lost,
-                    "packets_lost": packets_lost,
+                    "packets_lost": _event_trigger,
                     "packets_received": actual_received,
                     "event_begin": interval_begin,
                     "event_end": None,
@@ -269,7 +270,7 @@ class IPerfInstance(object):
                 }
 
                 if is_recovery_summary:
-                    # Close the event and replace accumulated estimate with iperf's truth.
+                    # Close the event; replace estimated running total with iperf's truth.
                     self._log.debug("recovery summary: {} truly lost".format(packets_lost))
                     self.currently_has_loss[stream_id] = False
                     event = self._results[stream_id]["events"][-1]
@@ -287,10 +288,10 @@ class IPerfInstance(object):
                 elif actual_received == 0:  # complete blackout
                     if self.currently_has_loss[stream_id]:
                         self._log.debug("connectivity lost (cont.)")
-                        self._results[stream_id]["events"][-1]["total_packets_lost_since_event_start"] += packets_lost
+                        self._results[stream_id]["events"][-1]["total_packets_lost_since_event_start"] += _event_trigger
                         self._results[stream_id]["events"][-1]["delayed_packets"] = self._delayed_packets[stream_id]
                         self._results[stream_id]["events"][-1]["timestamp_current"] = timestamp
-                        self._results[stream_id]["events"][-1]["packets_lost"] = packets_lost
+                        self._results[stream_id]["events"][-1]["packets_lost"] = _event_trigger
                         self._results[stream_id]["events"][-1]["connectivity_lost"] = True
                         self._results[stream_id]["events"][-1]["status"] = "connectivity lost (cont.)"
                         self._results[stream_id]["events"][-1]["packets_received"] = 0
@@ -300,22 +301,22 @@ class IPerfInstance(object):
                         self.currently_has_loss[stream_id] = True
                         self._current_event_number += 1
                         packet_loss_event_message["event_number"] = self._current_event_number
-                        packet_loss_event_message["packets_lost"] = packets_lost
-                        packet_loss_event_message["total_packets_lost_since_event_start"] = packets_lost
-                        packet_loss_event_message["delayed_packets"] = packets_lost
+                        packet_loss_event_message["packets_lost"] = _event_trigger
+                        packet_loss_event_message["total_packets_lost_since_event_start"] = _event_trigger
+                        packet_loss_event_message["delayed_packets"] = _event_trigger
                         packet_loss_event_message["connectivity_lost"] = True
                         packet_loss_event_message["status"] = "connectivity lost"
                         packet_loss_event_message["packets_received"] = 0
                         self._results[stream_id]["events"].append(packet_loss_event_message)
 
-                elif packets_lost > self.loss_threshold:  # partial loss
+                elif _event_trigger > self.loss_threshold:  # partial loss (unconfirmed)
                     if self.currently_has_loss[stream_id]:
                         self._log.debug("ongoing packet loss detected")
-                        self._results[stream_id]["events"][-1]["total_packets_lost_since_event_start"] += packets_lost
+                        self._results[stream_id]["events"][-1]["total_packets_lost_since_event_start"] += _event_trigger
                         self._results[stream_id]["events"][-1]["delayed_packets"] = self._delayed_packets[stream_id]
                         self._results[stream_id]["events"][-1]["timestamp_current"] = timestamp
                         self._results[stream_id]["events"][-1]["status"] = "losing packets (cont.)"
-                        self._results[stream_id]["events"][-1]["packets_lost"] = packets_lost
+                        self._results[stream_id]["events"][-1]["packets_lost"] = _event_trigger
                         self._results[stream_id]["events"][-1]["connectivity_lost"] = False
                         self._results[stream_id]["events"][-1]["packets_received"] = actual_received
                         packet_loss_event_message = copy.copy(self._results[stream_id]["events"][-1])
@@ -325,8 +326,8 @@ class IPerfInstance(object):
                         self._current_event_number += 1
                         packet_loss_event_message["event_number"] = self._current_event_number
                         packet_loss_event_message["status"] = "losing packets"
-                        packet_loss_event_message["total_packets_lost_since_event_start"] = packets_lost
-                        packet_loss_event_message["delayed_packets"] = packets_lost
+                        packet_loss_event_message["total_packets_lost_since_event_start"] = _event_trigger
+                        packet_loss_event_message["delayed_packets"] = _event_trigger
                         packet_loss_event_message["connectivity_lost"] = False
                         packet_loss_event_message["packets_received"] = actual_received
                         self._results[stream_id]["events"].append(packet_loss_event_message)
@@ -340,7 +341,7 @@ class IPerfInstance(object):
                     event["timestamp_end"] = timestamp
                     event["interval_end"] = interval_end
                     event["status"] = "stable"
-                    event["packets_lost"] = packets_lost
+                    event["packets_lost"] = 0
                     event["packets_received"] = actual_received
                     event["connectivity_lost"] = False
                     event["delayed_packets"] = event["total_packets_lost_since_event_start"]

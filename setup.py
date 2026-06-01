@@ -16,7 +16,7 @@ def format_version(version, fmt):
     return fmt.format(tag=tag, commitcount=count, gitsha=sha.lstrip("g"))
 
 
-version = check_output(command.split()).decode("utf-8").strip()
+version = format_version(check_output(command.split()).decode("utf-8").strip(), version_format[0])
 
 
 with open("README.rst", "r") as fh:

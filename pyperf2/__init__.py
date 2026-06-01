@@ -83,9 +83,10 @@ class IPerfInstance(object):
         except:
             pass
 
-    def set_raw_log_path(self, path):
-        self._raw_log_filepath = "{0}{1}{3}_{2}_instance_raw.log".format(
-            path, os.path.sep, self.name, self._creation_time
+    def set_raw_log_path(self, path, instance_type=None):
+        type_part = (instance_type + "_") if instance_type else ""
+        self._raw_log_filepath = os.path.join(
+            path, f"{type_part}{self._creation_time}_{self.name}_raw.log"
         )
         self._raw_log_filehandler = open(self._raw_log_filepath, "w")
 

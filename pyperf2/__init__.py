@@ -666,6 +666,34 @@ class IPerfInstance(object):
     def get_results(self):
         return self._results
 
+    def trim_results(self, keep, stream_id=None):
+        """Bound the retained in-memory result history to the most recent `keep` entries.
+
+        By default pyperf2 keeps the full per-interval `detail` (and `events`) history for
+        every stream, which grows without bound on long-running (test_duration=0) streams
+        and eventually exhausts memory. Callers that persist results elsewhere (a database,
+        their own capped buffer) can call this — typically from an on_data callback, which
+        runs in the reader thread so no extra locking is needed — to drop history pyperf2 no
+        longer needs to keep. `keep<=0` is a no-op, preserving the default unlimited history
+        for callers that don't opt in. Without a `stream_id`, every known stream is trimmed.
+        """
+        if not keep or keep <= 0:
+            return
+        stream_ids = [stream_id] if stream_id is not None else list(self._results.keys())
+        # Never trim detail below warmup_intervals or loss detection can't finish warming up
+        # (it gates on len(detail) < warmup_intervals).
+        keep_detail = max(keep, self.warmup_intervals)
+        for sid in stream_ids:
+            res = self._results.get(sid)
+            if not res:
+                continue
+            detail = res["detail"]
+            if len(detail) > keep_detail:
+                del detail[: len(detail) - keep_detail]
+            events = res["events"]
+            if len(events) > keep:
+                del events[: len(events) - keep]
+
 
 class Server(IPerfInstance):
     def __init__(self):
